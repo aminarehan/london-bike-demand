@@ -1,9 +1,18 @@
 .venv/
-data/
-mlruns/
-mlartifacts/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
+mlruns/
+mlartifacts/
 mlflow.db
-models/
+
+# Raw journeys (about 400 MB) are downloaded by the README commands, not stored.
+data/raw/
+data/processed/*
+# The dashboard's inputs are kept so it can be deployed without retraining (about 25 MB).
+!data/processed/predictions.parquet
+!data/processed/test_features.parquet
+models/*
+!models/departures.joblib
+!models/arrivals.joblib
+!models/net_flow.joblib
