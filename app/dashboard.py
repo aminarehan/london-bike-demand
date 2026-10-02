@@ -66,15 +66,23 @@ c3.metric("Model error (MAE, test)", f"{dep['departures/gradient_boosting']['mae
 c4.metric("Rain effect on demand", f"{results['rain_effect_observed']:+.0%}", help="Wet vs dry hours, like for like")
 
 # Red = forecast to lose bikes (emptying), blue = forecast to gain bikes (filling). Size = forecast departures.
-view["colour"] = view.pred_net_flow.apply(lambda f: [220, 60, 50, 190] if f < -1 else
-                                          [40, 110, 220, 190] if f > 1 else [140, 140, 140, 120])
-view["radius"] = 25 + view.pred_departures * 12
+# The map only gets plain columns: timestamps in the layer data stop pydeck drawing anything.
+points = pd.DataFrame({
+    "name": view.name,
+    "lon": view.lon,
+    "lat": view.lat,
+    "out": view.pred_departures.round(1),
+    "net": view.pred_net_flow.round(1),
+    "radius": 40 + view.pred_departures * 15,
+    "colour": view.pred_net_flow.apply(lambda f: [215, 48, 39, 210] if f < -1 else
+                                       [33, 102, 172, 210] if f > 1 else [120, 120, 120, 150]),
+})
 st.pydeck_chart(pdk.Deck(
-    layers=[pdk.Layer("ScatterplotLayer", view, get_position="[lon, lat]", get_fill_color="colour",
-                      get_radius="radius", pickable=True)],
-    initial_view_state=pdk.ViewState(latitude=51.507, longitude=-0.13, zoom=11.5),
-    tooltip={"text": "{name}\nForecast departures: {pred_departures}\nForecast net flow: {pred_net_flow}"},
-    map_style=None))
+    layers=[pdk.Layer("ScatterplotLayer", points, get_position=["lon", "lat"], get_fill_color="colour",
+                      get_radius="radius", radius_min_pixels=3, pickable=True)],
+    initial_view_state=pdk.ViewState(latitude=51.507, longitude=-0.125, zoom=11.3),
+    tooltip={"text": "{name}\nForecast departures: {out}\nForecast net flow: {net}"},
+    map_provider="carto", map_style="light"))
 st.caption("Red: forecast to empty out · Blue: forecast to fill up · Grey: roughly balanced · Size: forecast departures")
 
 left, right = st.columns(2)
@@ -89,4 +97,5 @@ with left:
 with right:
     st.subheader(f"City-wide departures on {day:%a %d %b}")
     daily = preds[preds.hour.dt.date == day].groupby("hour")[["departures", "pred_departures"]].sum()
-    st.line_chart(daily.rename(columns={"departures": "Actual", "pred_departures": "Forecast"}))
+    st.line_chart(daily.rename(columns={"departures": "Actual", "pred_departures": "Forecast"}),
+                  color=["#9aa0a6", "#d7301f"])   # grey actual, red forecast
