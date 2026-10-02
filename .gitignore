@@ -1,0 +1,9 @@
+.venv/
+data/
+mlruns/
+mlartifacts/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store
+mlflow.db
+models/

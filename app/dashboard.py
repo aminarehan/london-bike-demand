@@ -1,0 +1,92 @@
+"""Interactive map of forecast bike demand across London's docking stations.
+
+Run from the project folder:  streamlit run app/dashboard.py
+"""
+import json
+import sys
+from pathlib import Path
+
+import joblib
+import pandas as pd
+import pydeck as pdk
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from train import feature_columns  # noqa: E402  (same feature list the models were trained on)
+
+st.set_page_config(page_title="London Bike Demand", layout="wide")
+
+
+@st.cache_data
+def load():
+    preds = pd.read_parquet(ROOT / "data/processed/predictions.parquet")
+    features = pd.read_parquet(ROOT / "data/processed/test_features.parquet")
+    results = json.loads((ROOT / "reports/results.json").read_text())
+    return preds, features, results
+
+
+@st.cache_resource
+def load_models():
+    return {t: joblib.load(ROOT / f"models/{t}.joblib") for t in ("departures", "arrivals")}
+
+
+preds, features, results = load()
+models = load_models()
+
+st.title("London Bike-Share Demand Forecaster")
+st.caption("Next-hour departures and arrivals at every Santander Cycles docking station, forecast with gradient "
+           "boosting on 2.4 million TfL journeys. Test period: 11–31 May 2026 (unseen during training).")
+
+with st.sidebar:
+    day = st.date_input("Day", value=pd.Timestamp("2026-05-19").date(),
+                        min_value=preds.hour.min().date(), max_value=preds.hour.max().date())
+    hour_of_day = st.slider("Hour", 0, 23, 8)
+    rain = st.toggle("What if it rains? (steady 2 mm/h)")
+
+hour = pd.Timestamp(day) + pd.Timedelta(hours=hour_of_day)
+view = preds[preds.hour == hour].copy()
+
+if rain:
+    # Re-run both models on this hour's real features, with the weather swapped for steady rain.
+    wet = features[features.hour == hour].copy()
+    wet["precipitation_mm"], wet["is_wet"] = 2.0, 1
+    for target in ("departures", "arrivals"):
+        view[f"pred_{target}"] = models[target].predict(wet[feature_columns(target)]).clip(0)
+    view["pred_net_flow"] = view.pred_arrivals - view.pred_departures
+
+dep = results["results"]
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Forecast departures this hour", f"{view.pred_departures.sum():,.0f}",
+          help="Sum across all stations")
+c2.metric("Actual departures", f"{view.departures.sum():,.0f}")
+c3.metric("Model error (MAE, test)", f"{dep['departures/gradient_boosting']['mae']:.2f} bikes",
+          f"{dep['departures/gradient_boosting']['mae'] / dep['departures/baseline']['mae'] - 1:+.0%} vs last-week baseline",
+          delta_color="inverse")
+c4.metric("Rain effect on demand", f"{results['rain_effect_observed']:+.0%}", help="Wet vs dry hours, like for like")
+
+# Red = forecast to lose bikes (emptying), blue = forecast to gain bikes (filling). Size = forecast departures.
+view["colour"] = view.pred_net_flow.apply(lambda f: [220, 60, 50, 190] if f < -1 else
+                                          [40, 110, 220, 190] if f > 1 else [140, 140, 140, 120])
+view["radius"] = 25 + view.pred_departures * 12
+st.pydeck_chart(pdk.Deck(
+    layers=[pdk.Layer("ScatterplotLayer", view, get_position="[lon, lat]", get_fill_color="colour",
+                      get_radius="radius", pickable=True)],
+    initial_view_state=pdk.ViewState(latitude=51.507, longitude=-0.13, zoom=11.5),
+    tooltip={"text": "{name}\nForecast departures: {pred_departures}\nForecast net flow: {pred_net_flow}"},
+    map_style=None))
+st.caption("Red: forecast to empty out · Blue: forecast to fill up · Grey: roughly balanced · Size: forecast departures")
+
+left, right = st.columns(2)
+with left:
+    st.subheader("Stations most likely to run short")
+    short = view.nsmallest(10, "pred_net_flow")[["name", "docks", "pred_departures", "pred_arrivals", "pred_net_flow",
+                                                  "departures", "arrivals"]]
+    st.dataframe(short.round(1).rename(columns={
+        "name": "Station", "docks": "Docks", "pred_departures": "Forecast out", "pred_arrivals": "Forecast in",
+        "pred_net_flow": "Forecast net", "departures": "Actual out", "arrivals": "Actual in"}),
+        hide_index=True, use_container_width=True)
+with right:
+    st.subheader(f"City-wide departures on {day:%a %d %b}")
+    daily = preds[preds.hour.dt.date == day].groupby("hour")[["departures", "pred_departures"]].sum()
+    st.line_chart(daily.rename(columns={"departures": "Actual", "pred_departures": "Forecast"}))

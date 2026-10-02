@@ -1,0 +1,39 @@
+{
+  "results": {
+    "departures/baseline": {
+      "mae": 1.1842624126187489,
+      "rmse": 2.1259648993108775,
+      "mae_peak": 1.748182669136245
+    },
+    "departures/ridge": {
+      "mae": 1.0366980947837612,
+      "rmse": 1.718111669907195,
+      "mae_peak": 1.4816514094008175
+    },
+    "departures/gradient_boosting": {
+      "mae": 0.96278056884036,
+      "rmse": 1.616034748096461,
+      "mae_peak": 1.3757480352589786
+    },
+    "arrivals/baseline": {
+      "mae": 1.16791639282229,
+      "rmse": 2.0870657251511164,
+      "mae_peak": 1.7501244747166955
+    },
+    "arrivals/ridge": {
+      "mae": 1.0281431654757767,
+      "rmse": 1.6857394313798437,
+      "mae_peak": 1.5129963275719327
+    },
+    "arrivals/gradient_boosting": {
+      "mae": 0.9489059417747214,
+      "rmse": 1.571815458261407,
+      "mae_peak": 1.3847801860073625
+    }
+  },
+  "rain_effect_observed": -0.2140300031553547,
+  "rain_effect_model": -0.14357096044897422,
+  "train_rows": 1224192,
+  "test_rows": 401688,
+  "stations": 797
+}
