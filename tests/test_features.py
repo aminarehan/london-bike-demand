@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from train import add_features, feature_columns, haversine_km  # noqa: E402
+from train import add_features, feature_columns, haversine_km, precision_at_10  # noqa: E402
 
 
 def toy_hourly(hours=200):
@@ -16,8 +16,9 @@ def toy_hourly(hours=200):
     for station, offset in (("001", 0), ("002", 1000)):
         for i, h in enumerate(idx):
             rows.append({"station": station, "hour": h, "departures": offset + i, "arrivals": offset + i,
-                         "lat": 51.5, "lon": -0.12, "docks": 20, "km_from_centre": 1.0, "area": 0,
-                         "temperature_c": 12.0, "precipitation_mm": 0.0, "wind_kmh": 10.0})
+                         "net_flow": 0, "lat": 51.5, "lon": -0.12, "docks": 20, "km_from_centre": 1.0,
+                         "area": 0, "temperature_prev": 12.0, "precipitation_prev": 0.0, "wind_prev": 10.0,
+                         "wet_prev": 0})
     return pd.DataFrame(rows)
 
 
@@ -42,5 +43,19 @@ def test_lags_never_cross_stations():
 
 def test_feature_columns_present():
     df = add_features(toy_hourly())
-    for target in ("departures", "arrivals"):
+    for target in ("departures", "arrivals", "net_flow"):
         assert set(feature_columns(target)) <= set(df.columns)
+
+
+def test_models_never_see_current_hour_weather():
+    for target in ("departures", "arrivals", "net_flow"):
+        cols = feature_columns(target)
+        assert not {"precipitation_mm", "temperature_c", "wind_kmh", "is_wet"} & set(cols)
+
+
+def test_precision_at_10_perfect_and_reversed_rankings():
+    hour = pd.Timestamp("2026-05-19 08:00")
+    frame = pd.DataFrame({"station": [f"{i:03d}" for i in range(20)], "hour": hour, "hour_of_day": 8,
+                          "net_flow": np.arange(20) - 10})
+    assert precision_at_10(frame.assign(score=frame.net_flow), "score") == 1.0
+    assert precision_at_10(frame.assign(score=-frame.net_flow), "score") == 0.0

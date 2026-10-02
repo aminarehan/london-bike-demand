@@ -1,69 +1,87 @@
 # London Bike-Share Demand Forecaster
 
-Forecasts next-hour bike **departures and arrivals at every Santander Cycles docking station in London**, and flags
-the stations about to run short of bikes. Built on 2.4 million real TfL journeys (March–May 2026) with PySpark,
-scikit-learn and MLflow, and served as an interactive map in Streamlit.
+![tests](https://github.com/aminarehan/london-bike-demand/actions/workflows/tests.yml/badge.svg)
+
+Forecasts next-hour bike **departures, arrivals and net flow at every Santander Cycles docking station in London**,
+using only information available an hour ahead. Built on 2.4 million real TfL journeys (March–May 2026) with
+PySpark, scikit-learn and MLflow, and served as an interactive map in Streamlit.
 
 **Why it matters:** a bike-share scheme loses customers every time someone finds an empty dock. Knowing an hour
-ahead where demand will spike, and which stations will drain, lets an operator move bikes before it happens, and
-helps people choose green transport with confidence.
+ahead where demand will spike lets an operator plan bike redistribution and staffing, and helps people choose green
+transport with confidence.
 
 ## Results
 
-Held-out test period: 11–31 May 2026 (three weeks the models never saw), 797 stations, 401,688 station-hours.
+Evaluated on **two consecutive three-week test windows** (20 April–10 May and 11–31 May 2026). Each model trains
+only on the data before its window. Figures are the mean of the two windows, across 797 stations.
 
-| Model | Departures MAE | Arrivals MAE | Peak-hour departures MAE |
+**Departures** (arrivals behave almost identically):
+
+| Model | MAE per station-hour | WAPE per station-hour | City-wide hourly WAPE |
 |---|---|---|---|
-| Baseline: same hour last week | 1.18 | 1.17 | 1.75 |
-| Ridge regression | 1.04 | 1.03 | 1.48 |
-| **Gradient boosting (Poisson loss)** | **0.96** | **0.95** | **1.38** |
+| Baseline: same hour last week | 1.19 | 80% | 16.0% |
+| Baseline: station's usual for this hour and day type | 0.99 | 67% | 22.8% |
+| Ridge regression | 1.04 | 70% | 16.0% |
+| **Gradient boosting (Poisson loss)** | **0.97** | **65%** | **11.2%** |
 
-Gradient boosting cuts error by **19% against the seasonal baseline overall, and 21% at peak hours** (7–9 am, 5–7 pm).
-City-wide, it forecast 1,905 departures for 8 am on Tuesday 19 May against 1,818 actual.
+**What these numbers mean**
+- **City-wide, the model halves the error** of the typical-pattern baseline (11.2% vs 22.8% WAPE), because it reacts
+  to the things a fixed pattern cannot: recent demand, the previous hour's weather, holidays.
+- **At a single station in a single hour, accuracy is limited by chance.** Stations average only 1.47 hires an hour
+  and 48% of station-hours have none. Even a model that knew the true hourly rates exactly would still have an MAE
+  of about **0.80**, because individual hires arrive at random (Poisson noise). The model's 0.97 sits close to that
+  floor, and only about 2.5% below the typical-pattern baseline's 0.99. The useful signal is in the aggregate.
+- **Ranking the stations that will lose the most bikes** is harder: at peak hours, 29% of the model's top 10 were in
+  the actual top 10. That is no better than ranking by each station's usual pattern (29%), so the dashboard presents
+  it as a ranking by forecast outflow, not as a reliable "will run empty" alert.
 
 **Findings**
-- **Rain cuts demand by about a fifth.** Wet hours see 21% fewer departures than dry hours at the same time of
-  day and day type. The model independently estimates 14% fewer under steady rain.
-- **Commuters are less put off than leisure riders.** Across the test period, steady rain lowers forecast demand by
-  12% at the 8 am weekday peak but 15% on weekend afternoons.
-- **Morning hubs drain fast.** The busiest station-hour saw 195 bikes leave and 3 return in a single hour (8 am),
-  the pattern the "stations most likely to run short" table is built to catch.
+- **Rain cuts demand by about a fifth.** Wet hours see **21% fewer departures** than dry hours at the same time of
+  day and day type (95% interval: −29% to −12%, from resampling whole days; 54 wet hours out of 2,040).
+  Forecasting only from the previous hour's weather, the model predicts **9% fewer** departures after a wet hour.
+- **Morning hubs drain fast.** The busiest station-hour saw 195 bikes leave and 3 return in an hour at 8 am. Waterloo
+  and King's Cross top the outflow ranking on weekday mornings, while the City and West End fill up.
 - **E-bikes are now 19% of journeys.**
 
 ## How it works
 
 ```
 data/raw/*.csv ──► PySpark ──► station × hour table ──► features ──► models ──► MLflow
- (2.4M journeys)   clean,      (1.78M rows, zeros       calendar,     baseline,   every run
-                   aggregate    for quiet hours)         weather,      ridge,      logged
+ (2.4M journeys)   clean,      (1.78M rows, zeros       calendar,     baselines,  every run
+                   aggregate    for quiet hours)         past weather, ridge,      + models
                                                          location,     gradient
                                                          lags          boosting ──► Streamlit map
 ```
 
 1. **`src/build_hourly_demand.py` (PySpark).** Reads every journey file, drops broken and implausible trips
    (under a minute or over a day), and aggregates departures and arrivals per station per hour. It builds the full
-   station × hour grid so hours with no hires are recorded as zero rather than going missing.
+   station × hour grid so hours with no hires are recorded as zero. Three months fits in pandas; Spark is used so
+   the same pipeline scales to years of journeys without changes.
 2. **`src/fetch_context.py`.** Station locations and dock counts from the TfL BikePoint API; hourly London
    weather from Open-Meteo. Both are open and need no key.
-3. **`src/train.py`.** Features: hour, day of week, weekends and bank holidays; temperature, rain and wind;
-   distance from the centre and a k-means **area cluster** of station locations; and the station's own recent
-   history (last hour, same hour yesterday, same hour last week, 24-hour mean). Every lag looks strictly backwards,
-   and the test set is the **final three weeks**, never a random split, so nothing leaks from the future. Each model
-   run is logged to **MLflow** with its parameters and metrics.
+3. **`src/train.py`.** Features: hour, day of week, weekends and bank holidays; **the previous hour's** temperature,
+   rain and wind; distance from the centre and a k-means **area cluster** of station locations; and the station's
+   recent history (last hour, same hour yesterday, same hour last week, 24-hour mean). Three targets are modelled:
+   departures, arrivals and net flow. Every run, and the final models, are logged to **MLflow**.
 4. **`app/dashboard.py` (Streamlit + pydeck).** Pick a day and hour to see every station sized by forecast demand
-   and coloured by whether it is filling or emptying, the stations most likely to run short, forecast against actual
-   for the whole day, and a **"what if it rains?"** toggle that re-runs the models with the weather changed.
+   and coloured by forecast net flow, the stations forecast to lose the most bikes, forecast against actual for the
+   whole day, and a what-if toggle that re-runs the models as if the previous hour had been rainy.
 
 **Design choices**
-- **Poisson loss** for gradient boosting, because the targets are counts: predictions stay non-negative and the
-  error is judged relative to how busy a station is.
-- **A seasonal-naive baseline** ("same hour last week") gives the models something honest to beat.
-- **Peak-hour MAE** is reported separately, because rush hours are when a wrong forecast costs most.
+- **No look-ahead.** Lags only look backwards, models see the *previous* hour's weather rather than the hour being
+  forecast, and test windows always come after the training data. Tests check the lags and the weather columns.
+- **Two baselines.** "Same hour last week" is easy to beat; "this station's usual for this hour and day type" is the
+  honest benchmark.
+- **Poisson loss** for the count targets, so predictions stay non-negative and errors are judged relative to how busy
+  a station is. Net flow, which can be negative, uses squared error.
+- **Metrics chosen for the question:** WAPE for relative error, city-wide WAPE for planning-level accuracy,
+  peak-hour MAE because rush hours matter most, and precision@10 for the outflow ranking.
 
 **Limitations and next steps**
-- Weather comes from one point in central London; per-area weather would sharpen the outer stations.
-- "Run short" is judged from forecast net flow, not live bike counts. Adding TfL's live dock availability would turn
-  it into a true "empty in the next hour" alert.
+- Weather comes from one point in central London and uses observations rather than forecasts.
+- The outflow ranking does not beat the typical pattern. Live dock availability from TfL would turn it into a true
+  "empty within the hour" alert, which is the most valuable next step.
+- Forecasting at area level or for the next few hours would reduce the per-station noise.
 - Three months of spring data. A full year would capture summer peaks and winter lows.
 
 ## Run it
@@ -85,14 +103,14 @@ done
 python src/build_hourly_demand.py
 python src/fetch_context.py
 python src/train.py
-mlflow ui --backend-store-uri sqlite:///mlflow.db     # compare runs at http://localhost:5000
+mlflow ui --backend-store-uri sqlite:///mlflow.db     # compare runs and download models at http://localhost:5000
 streamlit run app/dashboard.py
 
-# Tests
+# Tests (also run by GitHub Actions on every push)
 pytest -q
 ```
 
-Or run the dashboard in Docker once the models are built:
+The Docker image serves the dashboard from the trained artifacts, so build it after `src/train.py` has run:
 
 ```bash
 docker build -t london-bike-demand .

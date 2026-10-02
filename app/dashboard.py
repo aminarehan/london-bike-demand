@@ -28,42 +28,46 @@ def load():
 
 @st.cache_resource
 def load_models():
-    return {t: joblib.load(ROOT / f"models/{t}.joblib") for t in ("departures", "arrivals")}
+    return {t: joblib.load(ROOT / f"models/{t}.joblib") for t in ("departures", "arrivals", "net_flow")}
 
 
 preds, features, results = load()
 models = load_models()
 
 st.title("London Bike-Share Demand Forecaster")
-st.caption("Next-hour departures and arrivals at every Santander Cycles docking station, forecast with gradient "
-           "boosting on 2.4 million TfL journeys. Test period: 11–31 May 2026 (unseen during training).")
+st.caption("Next-hour departures, arrivals and net flow at every Santander Cycles docking station, forecast with "
+           "gradient boosting on 2.4 million TfL journeys. Test period: 11–31 May 2026 (unseen during training). "
+           "Forecasts use only information available an hour ahead, including the previous hour's weather.")
 
 with st.sidebar:
     day = st.date_input("Day", value=pd.Timestamp("2026-05-19").date(),
                         min_value=preds.hour.min().date(), max_value=preds.hour.max().date())
     hour_of_day = st.slider("Hour", 0, 23, 8)
-    rain = st.toggle("What if it rains? (steady 2 mm/h)")
+    rain = st.toggle("What if the last hour was rainy? (2 mm/h)")
 
 hour = pd.Timestamp(day) + pd.Timedelta(hours=hour_of_day)
 view = preds[preds.hour == hour].copy()
 
 if rain:
-    # Re-run both models on this hour's real features, with the weather swapped for steady rain.
+    # Re-run the models on this hour's real features, with the previous hour's weather swapped for rain.
     wet = features[features.hour == hour].copy()
-    wet["precipitation_mm"], wet["is_wet"] = 2.0, 1
-    for target in ("departures", "arrivals"):
-        view[f"pred_{target}"] = models[target].predict(wet[feature_columns(target)]).clip(0)
-    view["pred_net_flow"] = view.pred_arrivals - view.pred_departures
+    wet["precipitation_prev"], wet["wet_prev"] = 2.0, 1
+    for target in ("departures", "arrivals", "net_flow"):
+        pred = models[target].predict(wet[feature_columns(target)])
+        view[f"pred_{target}"] = pred if target == "net_flow" else pred.clip(0)
 
-dep = results["results"]
+mean = results["mean_over_folds"]
+model, profile = mean["departures/gradient_boosting"], mean["departures/baseline_profile"]
+rain_stats = results["rain"]
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Forecast departures this hour", f"{view.pred_departures.sum():,.0f}",
-          help="Sum across all stations")
+c1.metric("Forecast departures this hour", f"{view.pred_departures.sum():,.0f}", help="Sum across all stations")
 c2.metric("Actual departures", f"{view.departures.sum():,.0f}")
-c3.metric("Model error (MAE, test)", f"{dep['departures/gradient_boosting']['mae']:.2f} bikes",
-          f"{dep['departures/gradient_boosting']['mae'] / dep['departures/baseline']['mae'] - 1:+.0%} vs last-week baseline",
-          delta_color="inverse")
-c4.metric("Rain effect on demand", f"{results['rain_effect_observed']:+.0%}", help="Wet vs dry hours, like for like")
+c3.metric("City-wide hourly error (WAPE)", f"{model['wape_citywide']:.0%}",
+          f"{model['wape_citywide'] - profile['wape_citywide']:+.0%} vs typical-pattern baseline", delta_color="inverse",
+          help="Average of two three-week test periods. Per station-hour the error is close to the random noise floor.")
+c4.metric("Rain effect on demand", f"{rain_stats['estimate']:+.0%}",
+          help=f"Wet vs dry hours, like for like. 95% interval {rain_stats['ci_low']:+.0%} to "
+               f"{rain_stats['ci_high']:+.0%} ({rain_stats['wet_hours']} wet hours)")
 
 # Red = forecast to lose bikes (emptying), blue = forecast to gain bikes (filling). Size = forecast departures.
 # The map only gets plain columns: timestamps in the layer data stop pydeck drawing anything.
@@ -87,7 +91,9 @@ st.caption("Red: forecast to empty out · Blue: forecast to fill up · Grey: rou
 
 left, right = st.columns(2)
 with left:
-    st.subheader("Stations most likely to run short")
+    st.subheader("Stations forecast to lose the most bikes")
+    st.caption(f"Ranked by forecast net outflow. At peak hours, {mean['net_flow/gradient_boosting']['precision_at_10']:.0%} "
+               "of the top 10 were in the actual top 10, similar to ranking by each station's usual pattern.")
     short = view.nsmallest(10, "pred_net_flow")[["name", "docks", "pred_departures", "pred_arrivals", "pred_net_flow",
                                                   "departures", "arrivals"]]
     st.dataframe(short.round(1).rename(columns={
