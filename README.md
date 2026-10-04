@@ -1,7 +1,5 @@
 # London Bike-Share Demand Forecaster
 
-![tests](https://github.com/aminarehan/london-bike-demand/actions/workflows/tests.yml/badge.svg)
-
 Forecasts next-hour bike **departures, arrivals and net flow at every Santander Cycles docking station in London**,
 using only information available an hour ahead. Built on 2.4 million real TfL journeys (March–May 2026) with
 PySpark, scikit-learn and MLflow, and served as an interactive map in Streamlit.
@@ -106,7 +104,7 @@ python src/train.py
 mlflow ui --backend-store-uri sqlite:///mlflow.db     # compare runs and download models at http://localhost:5000
 streamlit run app/dashboard.py
 
-# Tests (also run by GitHub Actions on every push)
+# Tests
 pytest -q
 ```
 
